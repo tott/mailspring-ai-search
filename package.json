@@ -1,0 +1,48 @@
+{
+  "name": "mailspring-ai-search",
+  "version": "0.1.0",
+  "title": "AI Search",
+  "description": "Semantic AI-powered email search for Mailspring — powered by vector embeddings and LLM synthesis",
+  "main": "lib/main",
+  "isOptional": true,
+  "windowTypes": {
+    "default": true
+  },
+  "engines": {
+    "mailspring": ">=1.10.0"
+  },
+  "scripts": {
+    "postinstall": "node scripts/patch-arrow-csp.js",
+    "build": "tsc",
+    "build:dev": "tsc && npm run sync",
+    "sync": "DEST=~/.config/Mailspring/packages/mailspring-ai-search && rsync -a --delete lib/ $DEST/lib/ && rsync -a package.json $DEST/package.json && for pkg in he html2text marked dompurify; do rsync -a --delete node_modules/$pkg/ $DEST/node_modules/$pkg/; done && rsync -a node_modules/apache-arrow/builder/valid.js $DEST/node_modules/apache-arrow/builder/valid.js",
+    "watch": "tsc --watch",
+    "build:prod": "tsc --sourceMap false && npm run sync",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "lint": "eslint src --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lancedb/lancedb": "^0.18.0",
+    "@types/dompurify": "^3.2.0",
+    "apache-arrow": "^18.1.0",
+    "dompurify": "^3.4.12",
+    "he": "^1.2.0",
+    "html2text": "^6.0.0",
+    "marked": "^18.0.6"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.0.0",
+    "jest": "^30.4.2",
+    "ts-jest": "^29.4.11",
+    "typescript": "^5.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tott/mailspring-ai-search"
+  }
+}
