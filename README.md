@@ -72,16 +72,30 @@ Mailspring (Electron)
 
 ## Installation
 
+### From a release zip (recommended)
+
+1. Download the latest `mailspring-ai-search-*.zip` from [Releases](https://github.com/tott/mailspring-ai-search/releases)
+2. Extract the zip to a folder
+3. Open a terminal in that folder and run:
+   ```bash
+   npm install --omit=dev
+   node scripts/patch-arrow-csp.js
+   ```
+4. In Mailspring: **Edit → Developer → Install a Plugin…** → select the extracted folder
+5. Open **Preferences → AI Search** to configure your providers
+
+### From source (for development)
+
 ```bash
-# Clone into Mailspring packages directory
-cd ~/.config/Mailspring/packages
 git clone https://github.com/tott/mailspring-ai-search
 cd mailspring-ai-search
 npm install
-npm run build
+npm run build:dev   # compiles and syncs to ~/.config/Mailspring/packages/
 ```
 
-Then restart Mailspring. The plugin will appear in Preferences → AI Search.
+Then reload in Mailspring: **Edit → Developer → Reload Package**.
+
+See [CLAUDE.md](CLAUDE.md) for full development documentation.
 
 ## Configuration
 

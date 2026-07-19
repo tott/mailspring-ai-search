@@ -15,6 +15,7 @@
     "postinstall": "node scripts/patch-arrow-csp.js",
     "build": "tsc",
     "build:dev": "tsc && npm run sync",
+    "pack": "node scripts/pack.js",
     "sync": "DEST=~/.config/Mailspring/packages/mailspring-ai-search && rsync -a --delete lib/ $DEST/lib/ && rsync -a package.json $DEST/package.json && for pkg in he html2text marked dompurify; do rsync -a --delete node_modules/$pkg/ $DEST/node_modules/$pkg/; done && rsync -a node_modules/apache-arrow/builder/valid.js $DEST/node_modules/apache-arrow/builder/valid.js",
     "watch": "tsc --watch",
     "build:prod": "tsc --sourceMap false && npm run sync",

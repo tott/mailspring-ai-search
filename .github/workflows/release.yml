@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install all dependencies (build needs devDeps)
+        run: npm ci
+
+      - name: Apply CSP patch
+        run: node scripts/patch-arrow-csp.js
+
+      - name: Build
+        run: npm run build
+
+      - name: Prune to production dependencies for zip
+        run: npm prune --omit=dev
+
+      - name: Re-apply CSP patch after prune
+        run: node scripts/patch-arrow-csp.js
+
+      - name: Create release zip
+        run: npm run pack
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: mailspring-ai-search-*.zip
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            1. Download `mailspring-ai-search-${{ github.ref_name }}.zip` below
+            2. Extract the zip to a folder
+            3. In Mailspring: **Edit → Developer → Install a Plugin…** → select the extracted folder
+            4. Open **Preferences → AI Search** to configure your embedding and LLM providers
+
+            See [README](https://github.com/tott/mailspring-ai-search#readme) for provider setup and configuration.
