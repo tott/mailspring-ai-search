@@ -227,24 +227,64 @@ export class Indexer {
     }
   }
 
-  /** Return set of already-indexed mailspring message IDs */
-  private async loadIndexedIds(): Promise<Set<string>> {
+  /** Persist and load the indexing watermark (last indexed message date in ms). */
+  private get watermarkPath(): string {
+    return require('path').join(this.config.dbPath, 'watermark.json');
+  }
+
+  private loadWatermark(): number {
     try {
-      const rows = await this.table.query().select(['mailspring_id']).toArray();
-      return new Set(rows.map((r: any) => r.mailspring_id));
+      const data = fs.readFileSync(this.watermarkPath, 'utf8');
+      return JSON.parse(data).lastDateMs || 0;
     } catch {
-      return new Set();
+      return 0;
     }
+  }
+
+  private saveWatermark(lastDateMs: number): void {
+    try {
+      fs.writeFileSync(this.watermarkPath, JSON.stringify({ lastDateMs }));
+    } catch { /* non-fatal */ }
   }
 
   /**
    * Index all messages from Mailspring's DatabaseStore.
-   * Must be called from within a Mailspring plugin context where
-   * DatabaseStore and Message are available globally.
+   * On incremental runs (index already exists), only fetches messages
+   * newer than the most recently indexed message — avoids scanning the
+   * full mailbox on every startup.
    */
   async indexAll(DatabaseStore: any, Message: any): Promise<void> {
     await this.openDB();
-    const indexedIds = await this.loadIndexedIds();
+
+    let lastDateMs = this.loadWatermark();
+
+    // If no watermark file exists but the table has data, seed the watermark
+    // from the most recent date in the index so the next run is incremental
+    if (lastDateMs === 0) {
+      try {
+        const rows = await this.table.search().select(['date']).limit(1).toArray();
+        if (rows.length > 0) {
+          const d = rows[0].date;
+          lastDateMs = typeof d === 'bigint' ? Number(d) : (d || 0);
+          // Take a broader sample to find the actual max (first result is most recent due to desc order)
+          const sample = await this.table.search().select(['date']).limit(1000).toArray();
+          const sampleMax = Math.max(...sample.map((r: any) => typeof r.date === 'bigint' ? Number(r.date) : (r.date || 0)));
+          if (sampleMax > lastDateMs) lastDateMs = sampleMax;
+          if (lastDateMs > 0) {
+            this.saveWatermark(lastDateMs);
+            logger.info(`Seeded watermark from existing index: ${new Date(lastDateMs).toISOString()}`);
+          }
+        }
+      } catch { /* index may be empty */ }
+    }
+
+    const isIncremental = lastDateMs > 0;
+
+    // For incremental runs, only fetch messages newer than the watermark.
+    // Subtract 5 minutes to catch messages with slightly out-of-order timestamps.
+    const sinceMs = isIncremental ? lastDateMs - 5 * 60 * 1000 : 0;
+    // Mailspring's date attribute is in seconds, not milliseconds
+    const sinceSec = Math.floor(sinceMs / 1000);
 
     const BATCH = 200;
     const MAX_CHARS = 6000;
@@ -252,6 +292,20 @@ export class Indexer {
     let total = 0;
     let chunksWritten = 0;
     const startTime = Date.now();
+    let maxDateMsSeen = lastDateMs;
+
+    // For incremental runs, load only IDs in the recent window to skip already-indexed ones
+    let indexedIds = new Set<string>();
+    if (isIncremental) {
+      try {
+        const rows = await this.table.query()
+          .select(['mailspring_id'])
+          .where(`date >= ${sinceMs}`)
+          .toArray();
+        indexedIds = new Set(rows.map((r: any) => r.mailspring_id as string));
+        logger.info(`Incremental index: since ${new Date(sinceMs).toISOString()}, ${indexedIds.size} already indexed in window`);
+      } catch { /* proceed without dedup — may re-embed a few messages */ }
+    }
 
     try {
       total = await DatabaseStore.count(Message)
@@ -259,8 +313,14 @@ export class Indexer {
         .then((n: number) => n);
     } catch { total = 0; }
 
+    if (isIncremental) {
+      logger.info(`Incremental index: watermark=${new Date(lastDateMs).toISOString()}, will stop early when reaching older messages`);
+    }
+
     this.emit({ type: 'progress', phase: 'scan', processed: 0, total, chunksWritten, startTime });
 
+    // Always fetch newest-first. For incremental runs, stop as soon as all
+    // messages in a batch are older than the watermark (they're already indexed).
     const fetchBatch = (off: number) => DatabaseStore
       .findAll(Message)
       .where(Message.attributes.draft.equal(false))
@@ -304,6 +364,19 @@ export class Indexer {
       const messages: any[] = await nextFetch;
       if (messages.length === 0) break;
 
+      // Incremental early exit: stop when the entire batch is older than the watermark.
+      // Messages are newest-first, so once a full batch is all older, everything after is too.
+      if (isIncremental && sinceMs > 0 && messages.length === BATCH) {
+        const batchNewest = messages.reduce((max: number, msg: any) => {
+          const d = msg.date instanceof Date ? msg.date.getTime() : Number(msg.date) * 1000;
+          return d > max ? d : max;
+        }, 0);
+        if (batchNewest < sinceMs) {
+          logger.info(`Incremental index: reached messages older than watermark at offset ${offset}, stopping early`);
+          break;
+        }
+      }
+
       // Start fetching the next batch immediately (overlaps with embed+write below)
       nextFetch = fetchBatch(offset + BATCH);
 
@@ -330,8 +403,26 @@ export class Indexer {
         }
         chunksWritten += rows.length;
 
-        // Track all messages from this batch as indexed
-        for (const msg of messages) indexedIds.add(msg.id);
+        // Track watermark: keep the highest date seen across all processed messages
+        for (const msg of messages) {
+          indexedIds.add(msg.id);
+          const msgDateMs = msg.date ? (msg.date instanceof Date ? msg.date.getTime() : Number(msg.date) * 1000) : 0;
+          if (msgDateMs > maxDateMsSeen) maxDateMsSeen = msgDateMs;
+        }
+
+        // Save watermark after every write so restarts know where to resume
+        if (maxDateMsSeen > lastDateMs) {
+          this.saveWatermark(maxDateMsSeen);
+        }
+      } else {
+        // Even if no new chunks, advance the watermark past messages we skipped
+        for (const msg of messages) {
+          const msgDateMs = msg.date ? (msg.date instanceof Date ? msg.date.getTime() : Number(msg.date) * 1000) : 0;
+          if (msgDateMs > maxDateMsSeen) maxDateMsSeen = msgDateMs;
+        }
+        if (maxDateMsSeen > lastDateMs) {
+          this.saveWatermark(maxDateMsSeen);
+        }
       }
 
       offset += BATCH;
